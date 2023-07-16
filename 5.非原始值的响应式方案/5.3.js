@@ -174,6 +174,7 @@ effect(() => {
 
 setTimeout(() => {
   console.log('==================')
+  console.log('代理对象：', obj);
   // 添加新属性，会对 for...in 产生影响
   obj.name = '啦啦啦'
 }, 500);
