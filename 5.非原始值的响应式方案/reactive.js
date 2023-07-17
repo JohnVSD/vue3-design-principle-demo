@@ -97,27 +97,93 @@ function trigger(target, key, type) {
   })
 }
 
+// ===================================以下是数据代理==================================================
+
 /**
  * 将非原始类型数据变为响应式数据
+ * > 5.5 深响应
  * @param {object} obj - 
  * @return {Proxy} -
  */ 
 export function reactive(obj) {
+  return createReactive(obj)
+}
+
+/**
+ * 5.5 浅响应
+ * @param {object} obj - 
+ * @return {Proxy} -
+ */ 
+export function shallowReactive(obj) {
+  return createReactive(obj, true)
+}
+
+/**
+ * 5.6 深只读
+ * @param {object} obj - 
+ * @return {Proxy} -
+ */ 
+export function readonly(obj) {
+  return createReactive(obj, false, true)
+}
+
+/**
+ * 5.6 浅只读
+ * @param {object} obj - 
+ * @return {Proxy} -
+ */ 
+export function shallowReadonly(obj) {
+  return createReactive(obj, true, true)
+}
+
+/**
+ * 5.5 将非原始类型数据变为响应式数据
+ * @param {object} obj - 
+ * @param {boolean} isShallow 5.5增加参数 是否浅响应，默认为 false，即非浅响应
+ * @param {boolean} isReadonly 5.6增加参数 是否只读数据，默认为 false，即非只读
+ * @return {Proxy} -
+ */ 
+export function createReactive(obj, isShallow = false, isReadonly = false) {
   return new Proxy(obj, {
     // 拦截读取操作
     get(target, key, receiver) {
-      console.warn('Proxy get');
+      console.warn('------ Proxy get');
       // 5.4.2 代理对象可以通过 raw 属性返回原始对象
       if (key === 'raw') {
         return target;
       }
 
-      track(target, key);
-      return Reflect.get(target, key, receiver);
+      // 5.6 非只读数据时才需要建立响应式联系
+      if (!isReadonly) {
+        track(target, key);
+      }
+
+      // 5.5 得到原始值结果
+      const res = Reflect.get(target, key, receiver)
+
+      // 5.5 如果是浅响应则直接返回结果
+      if (isShallow) {
+        return res;
+      }
+
+      if (typeof res === 'object' && res !== null) {
+        // 5.5 调用 reactive 将结果包装成响应式数据并返回
+        // 5.6 如果数据是只读，则调用 readonly 对值进行包装
+        return isReadonly ? readonly(res) : reactive(res);
+      }
+
+      return res;
     },
     // 拦截设置操作
     set(target, key, newVal, receiver) {
-      console.warn('Proxy set');
+      console.warn('------ Proxy set');
+      
+      // 5.6 如果是只读的，则打印警告信息并返回
+      if (isReadonly) {
+        console.warn(`属性 ${key} 是只读的`)
+        return true
+      }
+
       // 5.4.1 获取旧值
       const oldVal = target[key];
 
@@ -138,14 +204,14 @@ export function reactive(obj) {
     },
     // 拦截 in 操作符：'foo' in obj
     has(target, key) {
-      console.warn('Proxy has');
+      console.warn('------ Proxy has');
       track(target, key)
 
       return Reflect.has(target, key)
     },
     // 拦截 fon...in 循环
     ownKeys(target) {
-      console.warn('Proxy ownKeys');
+      console.warn('------ Proxy ownKeys');
       // 将副作用函数与 ITERATE_KEY 关联。因为此操作不像get可以获取到具体key值，这里只可以获取到原始对象。
       // 这也是合理的，因为在读取属性的时候总是能知道当前操作的是哪一个属性，所以只需要在该属性与副作用函数之间建立联系即可
       // 而 ownKeys 用来获取一个对象的所有属于自己的键值，这个操作明显不与任何具体键进行绑定，因此我们只能构造一个“唯一key”作为标识
@@ -155,10 +221,17 @@ export function reactive(obj) {
     },
     // 拦截 delete 操作
     deleteProperty(target, key) {
-      console.warn('Proxy delete >>>>>');
-      // * 检查备操作的属性是否是对象自己的属性
+      console.warn('------ Proxy delete');
+
+      // 5.6 如果是只读的，则打印警告信息并返回
+      if (isReadonly) {
+        console.warn(`属性 ${key} 是只读的`)
+        return true
+      }
+
+      // 检查备操作的属性是否是对象自己的属性
       const hadKey = Object.prototype.hasOwnProperty.call(target, key)
-      // * 使用 Reflect.deleteProperty 完成属性的删除
+      // 使用 Reflect.deleteProperty 完成属性的删除
       const res = Reflect.deleteProperty(target, key)
 
       if (res && hadKey) {
