@@ -9,7 +9,7 @@ export function effect(fn, options = {}) {
     cleanup(effectFn)
 
     activeEffect = effectFn;
-   // 将当前执行函数压入栈
+    // 将当前执行函数压入栈
     effectStack.push(activeEffect);
     const res = fn();
     // 当前函数执行完毕后弹出栈
@@ -60,11 +60,11 @@ function track(target, key) {
 }
 
 // 触发依赖
-function trigger(target, key, type) {
+function trigger(target, key, type, newVal) {
   const depsMap = bucket.get(target)
   if(!depsMap) return;
   const effects = depsMap.get(key)
-  // * 取得与 ITERATE_KEY 相关联的副作用函数
+  // 取得与 ITERATE_KEY 相关联的副作用函数
   const iterateEffects = depsMap.get(ITERATE_KEY)
 
   const effectsToRun = new Set()
@@ -76,13 +76,39 @@ function trigger(target, key, type) {
     }
   })
   
-  console.log(type, key);
-  // * 只有操作类型为 ADD 或 delete 时，才触发与 ITERATE_KEY 相关联的副作用函数重新执行
+  // 只有操作类型为 ADD 或 delete 时，才触发与 ITERATE_KEY 相关联的副作用函数重新执行
   if (type === 'ADD' || type === 'DELETE') {
-    // * 将与 ITERATE_KEY 相关联的副作用函数也添加到 effectsToRun
+    // 将与 ITERATE_KEY 相关联的副作用函数也添加到 effectsToRun
     iterateEffects && iterateEffects.forEach(effectFn => {
       if (activeEffect !== effectFn) {
         effectsToRun.add(effectFn)
+      }
+    })
+  }
+  
+  // 5.7.1 当操作类型为 ADD，并且原始对象是数组时，应该取出并执行与 length 属性相关联的副作用函数
+  if (type === 'ADD' && Array.isArray(target)) {
+    // 取出与 length 属性相关联的副作用函数
+    const lengthEffects = depsMap.get('length')
+    // 将副作用函数也添加到 effectsToRun，待执行
+    lengthEffects && lengthEffects.forEach(effectFn => {
+      if (activeEffect !== effectFn) {
+        effectsToRun.add(effectFn)
+      }
+    })
+  }
+
+  // 5.7.1 如果操作目标是数组，并且修改了数组的 length 属性
+  if (Array.isArray(target) && key === 'length') {
+    // 对于索引大于等于新的 length 值的元素
+    // 需要把所有相关联的副作用函数取出并添加到 effctsToRun 中待执行
+    depsMap.forEach((effects, index) => {
+      if (index >= newVal) {
+        effects.forEach(effectFn => {
+          if (effectFn !== activeEffect) {
+            effectsToRun.add(effectFn)
+          }
+        })
       }
     })
   }
@@ -147,14 +173,15 @@ export function createReactive(obj, isShallow = false, isReadonly = false) {
   return new Proxy(obj, {
     // 拦截读取操作
     get(target, key, receiver) {
-      console.warn('------ Proxy get');
+      console.warn('------ Proxy get：', key);
       // 5.4.2 代理对象可以通过 raw 属性返回原始对象
       if (key === 'raw') {
         return target;
       }
 
       // 5.6 非只读数据时才需要建立响应式联系
-      if (!isReadonly) {
+      // 5.7.2 增加判断，如果 key 是 symbol 类型，则不进行追踪 (为了避免发生意外，不应对 symbol 类型进行追踪)
+      if (!isReadonly && typeof key !== 'symbol') {
         track(target, key);
       }
 
@@ -176,7 +203,7 @@ export function createReactive(obj, isShallow = false, isReadonly = false) {
     },
     // 拦截设置操作
     set(target, key, newVal, receiver) {
-      console.warn('------ Proxy set');
+      console.warn(`------ Proxy set {${key}}`);
       
       // 5.6 如果是只读的，则打印警告信息并返回
       if (isReadonly) {
@@ -187,7 +214,11 @@ export function createReactive(obj, isShallow = false, isReadonly = false) {
       // 5.4.1 获取旧值
       const oldVal = target[key];
 
-      const type = Object.prototype.hasOwnProperty.call(target, key) ? 'SET' : 'ADD'
+      // 如果属性不存在，则说明是添加新属性，否则是设置已有属性
+      const type = Array.isArray(target) 
+        // 5.7.1 如果代理目标对象是数组，则检测被设置的索引值是否小于数组的长度，小于为 set 操作，否则为 add 操作
+        ? Number(key) < target.length ? 'SET' : 'ADD' 
+        : Object.prototype.hasOwnProperty.call(target, key) ? 'SET' : 'ADD'
 
       // 设置属性值
       const res = Reflect.set(target, key, newVal, receiver)
@@ -196,7 +227,8 @@ export function createReactive(obj, isShallow = false, isReadonly = false) {
       if (target === receiver.raw) {
         // 5.4.1 比较新旧值，只有当它们不全等，并且不都是 NaN 时才触发响应 (NaN === NaN 是 false)
         if (oldVal !== newVal && (oldVal === oldVal || newVal === newVal) ) {
-          trigger(target, key, type)
+          // 5.7.1 增加第四个参数，触发响应的新值
+          trigger(target, key, type, newVal)
         }
       }
       
@@ -204,7 +236,7 @@ export function createReactive(obj, isShallow = false, isReadonly = false) {
     },
     // 拦截 in 操作符：'foo' in obj
     has(target, key) {
-      console.warn('------ Proxy has');
+      console.warn(`------ Proxy has {${key}}`);
       track(target, key)
 
       return Reflect.has(target, key)
@@ -212,16 +244,25 @@ export function createReactive(obj, isShallow = false, isReadonly = false) {
     // 拦截 fon...in 循环
     ownKeys(target) {
       console.warn('------ Proxy ownKeys');
-      // 将副作用函数与 ITERATE_KEY 关联。因为此操作不像get可以获取到具体key值，这里只可以获取到原始对象。
-      // 这也是合理的，因为在读取属性的时候总是能知道当前操作的是哪一个属性，所以只需要在该属性与副作用函数之间建立联系即可
-      // 而 ownKeys 用来获取一个对象的所有属于自己的键值，这个操作明显不与任何具体键进行绑定，因此我们只能构造一个“唯一key”作为标识
-      // 也可以理解为我们要为整个 for...in 这个操作本身建立响应联系，而不是某一个key
-      track(target, ITERATE_KEY)
+      /**
+       * 5.3 代理对象的 for...in
+       * 将副作用函数与 ITERATE_KEY 关联。因为此操作不像get可以获取到具体key值，这里只可以获取到原始对象。
+       * 这也是合理的，因为在读取属性的时候总是能知道当前操作的是哪一个属性，所以只需要在该属性与副作用函数之间建立联系即可
+       * 而 ownKeys 用来获取一个对象的所有属于自己的键值，这个操作明显不与任何具体键进行绑定，因此我们只能构造一个“唯一key”作为标识
+       * 也可以理解为我们要为整个 for...in 这个操作本身建立响应联系，而不是某一个key
+       */
+      /**
+       * 5.7.2 代理数组的 for...in 
+       * 只有添加或删除属性才能够影响 for...in 循环的结果，本质上也是修改了数组的 length 属性
+       * 所以代理目标对象是数组时用 length 做为 key 去建立响应联系
+       */ 
+      const key = Array.isArray(target) ? 'length' : ITERATE_KEY
+      track(target, key)
       return Reflect.ownKeys(target)
     },
     // 拦截 delete 操作
     deleteProperty(target, key) {
-      console.warn('------ Proxy delete');
+      console.warn(`------ Proxy delete {${key}}`);
 
       // 5.6 如果是只读的，则打印警告信息并返回
       if (isReadonly) {
