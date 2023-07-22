@@ -74,7 +74,23 @@ import { effect, reactive } from './reactive.js'
 // }
 
 // # 5.7.3 数组的查找方法
-// 重写数组的 includes/indexOf/lastIndexOf 方法 
+// 正常情况下原型方法如: includes 与对象访问属性方式一样，无需额外处理，但在某些情况下会出现不符合预期的情况，如下：
+{
+  const obj = {};
+  const arr = reactive([obj]);
+  
+  // console.log(arr.includes(arr[0])) // 修改前 false 输出不符合预期
+  // 不符合预期的原因，是 includes 语言规范内部会读取 this 属性，而此时的 this 指向的是代理对象 arr；
+  // arr[0]是可代理对象，reactive 内部实现如果对象的属性是可代理对象，则将其包装成代理对象返回，而两个代理对象是不同的。
+  // 要对 reactive 进行修改
+  // console.log(arr.includes(arr[0])) // 修改后 true 符合预期
+
+  // 
+  // 因为 includes 内部的 this 指向的是代理对象 arr，而 obj 是原始对象，所以不一致。
+  // 但是从用户角度看，这是符合直觉的一种操作，应该返回 true。
+  // 所以我们要对其进行调整，需要重写数组的 includes 方法并实现自定义行为，才能解决这个问题
+  console.log(arr.indexOf(obj)) // 修改前 false；修改后 true 符合预期
+}
 
 // # 5.7.4 隐式修改数组长度的原型方法
 // push/pop/shift/unshift

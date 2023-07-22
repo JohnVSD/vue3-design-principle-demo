@@ -125,14 +125,24 @@ function trigger(target, key, type, newVal) {
 
 // ===================================以下是数据代理==================================================
 
+// 5.7.3 定义一个 Map 存储原始对象到代理对象的映射
+const reactiveMap = new Map();
 /**
- * 将非原始类型数据变为响应式数据
- * > 5.5 深响应
+ * 将非原始类型数据变为响应式数据（深响应）
  * @param {object} obj - 
- * @return {Proxy} -
+ * @return {Proxy}
  */ 
 export function reactive(obj) {
-  return createReactive(obj)
+  // 5.7.3 优先通过原始对象寻找之前创建过得代理对象，如果能找到则直接返回
+  const existionProxy = reactiveMap.get(obj)
+  if (existionProxy) return existionProxy
+
+  // 5.7.3 否则创建新的代理对象
+  const proxy = createReactive(obj);
+  // 5.7.3 存储到 Map 中，避免重复创建
+  reactiveMap.set(obj, proxy)
+
+  return proxy
 }
 
 /**
@@ -163,6 +173,35 @@ export function shallowReadonly(obj) {
 }
 
 /**
+ * 5.7.3 重写数组查找方法
+ * ```
+ *  const obj = {};
+ *  const arr = reactive([obj]);
+ *  console.log(arr.includes(obj)) // false 不符合预期
+ * ``` 
+ * 因为 includes 内部的 this 指向的是代理对象 arr，而 obj 是原始对象，所以不一致。
+ * 但是从用户角度看，这是符合直觉的一种操作，应该返回 true。
+ * 所以我们要对其进行调整，需要重写数组的 includes 方法并实现自定义行为，才能解决这个问题
+ * 还有 indexOf / lastIndexOf
+ */ 
+const arrayInstrumentations = {};
+['includes', 'indexOf', 'lastIndexOf'].forEach(method => {
+  const originMethod = Array.prototype[method]
+
+  arrayInstrumentations[method] = function(...args) {
+    // this 是代理对象，先在代理对象中查找，将结果存储到 res 中
+    let res = originMethod.apply(this, args);
+
+    if (res === false || res === -1) {
+      // false 说明没找到，通过 this.raw 拿到原始数组，再去其中查找并更新 res 值
+      res = originMethod.apply(this.raw, args)
+    }
+
+    return res;
+  }
+})
+
+/**
  * 5.5 将非原始类型数据变为响应式数据
  * @param {object} obj - 
  * @param {boolean} isShallow 5.5增加参数 是否浅响应，默认为 false，即非浅响应
@@ -177,6 +216,12 @@ export function createReactive(obj, isShallow = false, isReadonly = false) {
       // 5.4.2 代理对象可以通过 raw 属性返回原始对象
       if (key === 'raw') {
         return target;
+      }
+
+      // 5.7.3 如果操作的目标对象是数组，并且 key 存在于 arrayInstrumentations 上，
+      // 那么返回定义在 arrayInstrumentations 上的值
+      if (Array.isArray(target) && arrayInstrumentations.hasOwnProperty(key)) {
+        return Reflect.get(arrayInstrumentations, key, receiver)
       }
 
       // 5.6 非只读数据时才需要建立响应式联系
