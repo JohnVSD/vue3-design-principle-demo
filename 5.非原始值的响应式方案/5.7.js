@@ -75,9 +75,9 @@ import { effect, reactive } from './reactive.js'
 
 // # 5.7.3 数组的查找方法
 // 正常情况下原型方法如: includes 与对象访问属性方式一样，无需额外处理，但在某些情况下会出现不符合预期的情况，如下：
-{
-  const obj = {};
-  const arr = reactive([obj]);
+// {
+  // const obj = {};
+  // const arr = reactive([obj]);
   
   // console.log(arr.includes(arr[0])) // 修改前 false 输出不符合预期
   // 不符合预期的原因，是 includes 语言规范内部会读取 this 属性，而此时的 this 指向的是代理对象 arr；
@@ -89,8 +89,23 @@ import { effect, reactive } from './reactive.js'
   // 因为 includes 内部的 this 指向的是代理对象 arr，而 obj 是原始对象，所以不一致。
   // 但是从用户角度看，这是符合直觉的一种操作，应该返回 true。
   // 所以我们要对其进行调整，需要重写数组的 includes 方法并实现自定义行为，才能解决这个问题
-  console.log(arr.indexOf(obj)) // 修改前 false；修改后 true 符合预期
-}
+  // console.log(arr.indexOf(obj)) // 修改前 false；修改后 true 符合预期
+// }
 
 // # 5.7.4 隐式修改数组长度的原型方法
-// push/pop/shift/unshift
+// push 操作在语言规范上描述的执行流程中出现既会读取 length 属性也会设置 length 属性
+{
+  const arr = reactive([]);
+  // 第一个副作用执行时会与 length 建立响应关系；
+  // 同时还会有 set 操作，取出所有与 length 关联的副作用函数进行执行
+  effect(() => {
+    arr.push(1)
+  })
+  // 第二个副作用执行时也会与 length 建立响应关系
+  // 同时也还会有 set 操作，取出所有与 length 关联的副作用函数进行执行
+  // !所以两个副作用函数互相影响进入死循环，最终栈溢出
+  effect(() => {
+    arr.push(1)
+  })
+  // ? 如何解决：屏蔽 push 内部的 length 响应式绑定，将方法重写
+}

@@ -40,10 +40,13 @@ function cleanup(effectFn) {
   effectFn.deps.length = 0
 }
 
+// 5.7.4 是否进行响应式追踪
+let shouldTrack = true;
+
 let bucket = new WeakMap();
 // 追踪和收集依赖
 function track(target, key) {
-  if (!activeEffect) return target[key];
+  if (!activeEffect || !shouldTrack) return target[key];
 
   let depsMap = bucket.get(target)
   if(!depsMap){
@@ -170,8 +173,9 @@ export function readonly(obj) {
  */ 
 export function shallowReadonly(obj) {
   return createReactive(obj, true, true)
-}
+};
 
+const arrayInstrumentations = {};
 /**
  * 5.7.3 重写数组查找方法
  * ```
@@ -184,7 +188,6 @@ export function shallowReadonly(obj) {
  * 所以我们要对其进行调整，需要重写数组的 includes 方法并实现自定义行为，才能解决这个问题
  * 还有 indexOf / lastIndexOf
  */ 
-const arrayInstrumentations = {};
 ['includes', 'indexOf', 'lastIndexOf'].forEach(method => {
   const originMethod = Array.prototype[method]
 
@@ -199,7 +202,34 @@ const arrayInstrumentations = {};
 
     return res;
   }
-})
+});
+
+/**
+ * 5.7.4 重写隐式修改数组长度的原型方法，包括：push/pop/shift/unshift、splice
+ * ```
+ * const arr = reactive([]);
+ * // 两个 副作用函数互相影响，导致栈溢出
+ * effect(() => { arr.push(1) })
+ * effect(() => { arr.push(1) })
+ * ```
+ * 第一个副作用执行时会与 length 建立响应关系；同时还会有 set 操作，取出所有与 length 关联的副作用函数进行执行
+ * 第二个副作用执行时也会与 length 建立响应关系；同时也还会有 set 操作
+ * 所以两个副作用函数互相影响进入死循环，最终栈溢出
+ */ 
+['push', 'pop', 'shift', 'unshift', 'splice'].forEach(method => {
+  const originMethod = Array.prototype[method];
+
+  arrayInstrumentations[method] = function(...args) {
+    // 在调用原始方法之前，禁止追踪
+    shouldTrack = false;
+    // push 的默认行为
+    let res = originMethod.apply(this, args)
+    // 原始方法执行完毕后，恢复追踪
+    shouldTrack = true;
+
+    return res;
+  }
+});
 
 /**
  * 5.5 将非原始类型数据变为响应式数据
@@ -210,7 +240,7 @@ const arrayInstrumentations = {};
  */ 
 export function createReactive(obj, isShallow = false, isReadonly = false) {
   return new Proxy(obj, {
-    // 拦截读取操作
+    // * 拦截读取操作
     get(target, key, receiver) {
       console.warn('------ Proxy get：', key);
       // 5.4.2 代理对象可以通过 raw 属性返回原始对象
@@ -246,7 +276,7 @@ export function createReactive(obj, isShallow = false, isReadonly = false) {
 
       return res;
     },
-    // 拦截设置操作
+    // * 拦截设置操作
     set(target, key, newVal, receiver) {
       console.warn(`------ Proxy set {${key}}`);
       
@@ -279,14 +309,14 @@ export function createReactive(obj, isShallow = false, isReadonly = false) {
       
       return res
     },
-    // 拦截 in 操作符：'foo' in obj
+    // * 拦截 in 操作符：'foo' in obj
     has(target, key) {
       console.warn(`------ Proxy has {${key}}`);
       track(target, key)
 
       return Reflect.has(target, key)
     },
-    // 拦截 fon...in 循环
+    // * 拦截 fon...in 循环
     ownKeys(target) {
       console.warn('------ Proxy ownKeys');
       /**
@@ -305,7 +335,7 @@ export function createReactive(obj, isShallow = false, isReadonly = false) {
       track(target, key)
       return Reflect.ownKeys(target)
     },
-    // 拦截 delete 操作
+    // * 拦截 delete 操作
     deleteProperty(target, key) {
       console.warn(`------ Proxy delete {${key}}`);
 
